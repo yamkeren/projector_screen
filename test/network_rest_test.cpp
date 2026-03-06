@@ -5,9 +5,9 @@
 // Monitor: pio device monitor -e network_test
 //
 // Tests:
-//   1. WiFi connection and IP address acquisition
+//   1. WiFi connection via WiFiManager captive-portal library
 //   2. WiFi reconnect after deliberate disconnect
-//   3. REST API server startup on /status, /open, /close, /stop, /home, /reset
+//   3. REST API server startup (ESPAsyncWebServer)
 //   4. HTTP client self-test: GET /status — validate JSON response fields
 //   5. HTTP client self-test: POST /open, /close, /stop — validate 200 OK
 //   6. HTTP client self-test: POST /home, /reset — validate 200 OK
@@ -17,10 +17,11 @@
 //  10. REST API stop/restart cycle
 //
 // Prerequisites:
-//   - WiFi credentials in config.h must be valid
+//   - WiFi credentials must be saved on the device (via captive portal)
 //   - ESP32 must be in range of the configured WiFi AP
 //
 // NOTE: Uses HTTPClient to make requests to itself (localhost).
+//       ESPAsyncWebServer handles requests without a pump task.
 // ============================================================================
 
 #include <Arduino.h>
@@ -89,20 +90,8 @@ static int httpPost(const String& path, String& body) {
 static void testWifiConnect() {
     Serial.println("\n--- Test Group: WiFi Connection ---");
 
-    wifiMgr.begin();
-
-    // Poll WiFiManager until connected or timeout
-    uint32_t startMs = millis();
-    uint32_t timeout = cfg::network::WIFI_CONNECT_TIMEOUT_MS + 5000;
-
-    while (!wifiMgr.isConnected() && (millis() - startMs) < timeout) {
-        wifiMgr.update();
-        buzzer.update();
-        esp_task_wdt_reset();
-        vTaskDelay(pdMS_TO_TICKS(100));
-    }
-
-    bool connected = wifiMgr.isConnected();
+    // WiFiManager::autoConnect is blocking — connects or opens captive portal
+    bool connected = wifiMgr.begin();
     check("WiFi connects to AP", connected);
 
     if (connected) {
@@ -118,12 +107,12 @@ static void testWifiConnect() {
         // Verify shared state was updated
         check("SharedState wifi flag set", sharedState.getStatus().wifiConnected);
     } else {
-        check("IP address acquired", false, "WiFi not connected - check SSID/pass in config.h");
+        check("IP address acquired", false, "WiFi not connected - run captive portal first");
         check("Signal strength adequate", false, "WiFi not connected");
         check("SharedState wifi flag set", false, "WiFi not connected");
 
         Serial.println("\n  *** WiFi connection failed — skipping REST API tests ***");
-        Serial.println("  Verify cfg::network::WIFI_SSID and WIFI_PASS in config.h\n");
+        Serial.println("  Connect to 'ProjectorScreen-Setup' AP to configure WiFi\n");
         return; // Can't test REST without WiFi
     }
 }
@@ -203,38 +192,16 @@ static void testGetStatus() {
         return;
     }
 
-    // The REST API runs in the same task context, so we need to pump
-    // handleClient() between our HTTP requests.
-    // Since HTTPClient and WebServer both run on the same core, we
-    // yield between request and server handling.
-
     // Set some known state first
     sharedState.setState(SystemState::IDLE);
     sharedState.setPosition(42);
     sharedState.setHomed(true);
     sharedState.setVelocity(1.5f);
-    sharedState.setCurrentMa(250.0f);
     sharedState.setUptimeMs(millis());
 
-    // Pump the server in a background approach:
-    // Start a short-lived task to handle the HTTP server while we make requests
-    TaskHandle_t serverTask = nullptr;
-    static volatile bool serverRunning = true;
-    serverRunning = true;
-
-    xTaskCreatePinnedToCore(
-        [](void* param) {
-            while (serverRunning) {
-                restApi.handleClient();
-                buzzer.update();
-                vTaskDelay(pdMS_TO_TICKS(5));
-            }
-            vTaskDelete(NULL);
-        },
-        "ServerPump", 4096, nullptr, 2, &serverTask, 0
-    );
-
-    vTaskDelay(pdMS_TO_TICKS(100)); // Let server task start
+    // ESPAsyncWebServer handles requests without a pump task —
+    // just give it a moment to be ready after begin()
+    vTaskDelay(pdMS_TO_TICKS(200));
 
     String body;
     int code = httpGet("/status", body);
@@ -257,7 +224,6 @@ static void testGetStatus() {
             check("JSON has 'position' field", doc["position"].is<int>());
             check("JSON has 'homed' field", doc["homed"].is<bool>());
             check("JSON has 'velocity' field", doc["velocity"].is<float>());
-            check("JSON has 'current_ma' field", doc["current_ma"].is<float>());
             check("JSON has 'faults' field", doc["faults"].is<uint32_t>());
             check("JSON has 'fault_names' array", doc["fault_names"].is<JsonArray>());
             check("JSON has 'wifi' field", doc["wifi"].is<bool>());
@@ -284,10 +250,6 @@ static void testGetStatus() {
             check("faults = 0 (none)", faults == 0);
         }
     }
-
-    // Stop server pump task
-    serverRunning = false;
-    vTaskDelay(pdMS_TO_TICKS(100));
 }
 
 // ============================================================================
@@ -304,23 +266,6 @@ static void testPostCommands() {
     // Set system to IDLE + homed so commands are accepted
     sharedState.setState(SystemState::IDLE);
     sharedState.setHomed(true);
-
-    // Pump server in background
-    static volatile bool serverRunning2 = true;
-    serverRunning2 = true;
-    TaskHandle_t serverTask = nullptr;
-
-    xTaskCreatePinnedToCore(
-        [](void* param) {
-            while (serverRunning2) {
-                restApi.handleClient();
-                buzzer.update();
-                vTaskDelay(pdMS_TO_TICKS(5));
-            }
-            vTaskDelete(NULL);
-        },
-        "ServerPump2", 4096, nullptr, 2, &serverTask, 0
-    );
 
     vTaskDelay(pdMS_TO_TICKS(100));
 
@@ -374,10 +319,6 @@ static void testPostCommands() {
         const char* msg = doc["message"] | "null";
         check("404 response has error message", strcmp(msg, "not_found") == 0);
     }
-
-    // Stop server pump
-    serverRunning2 = false;
-    vTaskDelay(pdMS_TO_TICKS(100));
 }
 
 // ============================================================================
@@ -401,31 +342,11 @@ static void testRestApiStopRestart() {
     restApi.begin();
     check("REST API restarted", restApi.isRunning());
 
-    // Quick server pump + self-test
-    static volatile bool serverRunning3 = true;
-    serverRunning3 = true;
-    TaskHandle_t serverTask = nullptr;
-
-    xTaskCreatePinnedToCore(
-        [](void* param) {
-            while (serverRunning3) {
-                restApi.handleClient();
-                buzzer.update();
-                vTaskDelay(pdMS_TO_TICKS(5));
-            }
-            vTaskDelete(NULL);
-        },
-        "ServerPump3", 4096, nullptr, 2, &serverTask, 0
-    );
-
     vTaskDelay(pdMS_TO_TICKS(200));
 
     String body;
     int code = httpGet("/status", body);
     check("GET /status works after restart", code == 200);
-
-    serverRunning3 = false;
-    vTaskDelay(pdMS_TO_TICKS(100));
 }
 
 // ============================================================================
@@ -446,23 +367,6 @@ static void testCommandQueueStress() {
     // Set system ready
     sharedState.setState(SystemState::IDLE);
     sharedState.setHomed(true);
-
-    // Pump server
-    static volatile bool serverRunning4 = true;
-    serverRunning4 = true;
-    TaskHandle_t serverTask = nullptr;
-
-    xTaskCreatePinnedToCore(
-        [](void* param) {
-            while (serverRunning4) {
-                restApi.handleClient();
-                buzzer.update();
-                vTaskDelay(pdMS_TO_TICKS(2));
-            }
-            vTaskDelete(NULL);
-        },
-        "ServerPump4", 4096, nullptr, 2, &serverTask, 0
-    );
 
     vTaskDelay(pdMS_TO_TICKS(100));
 
@@ -491,9 +395,6 @@ static void testCommandQueueStress() {
     while (sharedState.receiveCommand(cmd)) drained++;
     snprintf(detail, sizeof(detail), "Drained %d commands", drained);
     check("Commands drained from queue", drained > 0, detail);
-
-    serverRunning4 = false;
-    vTaskDelay(pdMS_TO_TICKS(100));
 }
 
 // ============================================================================
@@ -506,22 +407,6 @@ static void testResponseTiming() {
         check("Response timing", false, "Skipped — API not running");
         return;
     }
-
-    static volatile bool serverRunning5 = true;
-    serverRunning5 = true;
-    TaskHandle_t serverTask = nullptr;
-
-    xTaskCreatePinnedToCore(
-        [](void* param) {
-            while (serverRunning5) {
-                restApi.handleClient();
-                buzzer.update();
-                vTaskDelay(pdMS_TO_TICKS(2));
-            }
-            vTaskDelete(NULL);
-        },
-        "ServerPump5", 4096, nullptr, 2, &serverTask, 0
-    );
 
     vTaskDelay(pdMS_TO_TICKS(100));
 
@@ -554,9 +439,6 @@ static void testResponseTiming() {
         check("Average response < 100ms", false, "All requests failed");
         check("Max response < 250ms", false, "All requests failed");
     }
-
-    serverRunning5 = false;
-    vTaskDelay(pdMS_TO_TICKS(100));
 }
 
 // ============================================================================
@@ -569,9 +451,9 @@ void setup() {
     Serial.println("\n=============================================");
     Serial.println("  Network & REST API Validation Test Suite");
     Serial.println("=============================================");
-    Serial.printf("  SSID: %s\n", cfg::network::WIFI_SSID);
+    Serial.printf("  AP Name: %s\n", cfg::network::AP_NAME);
     Serial.printf("  Port: %d\n", cfg::network::HTTP_PORT);
-    Serial.println("  Requires valid WiFi credentials in config.h\n");
+    Serial.println("  Requires WiFi credentials saved via captive portal\n");
 
     testWifiConnect();
     testWifiStateMachine();

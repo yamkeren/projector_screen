@@ -38,7 +38,7 @@ public:
         return _edges.load(std::memory_order_relaxed);
     }
 
-    // Public for ISR access — do not call directly
+private:
     volatile std::atomic<int32_t>  _count{0};
     volatile std::atomic<int8_t>   _direction{0};
     volatile std::atomic<uint32_t> _edges{0};

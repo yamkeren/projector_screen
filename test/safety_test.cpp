@@ -5,13 +5,11 @@
 // Monitor: pio device monitor -e safety_test
 //
 // Tests:
-//   1. INA226 current sensor communication and stability
-//   2. Limit switch reading and noise check
-//   3. Fault latching via triggerFault() and reset
-//   4. Stall detection (drive motor into obstruction / block motor shaft)
+//   1. Limit switch reading and noise check
+//   2. Fault latching via triggerFault() and reset
+//   3. Stall detection (drive motor into obstruction / block motor shaft)
 //
 // Prerequisites:
-//   - INA226 connected on I2C (SDA=21, SCL=22, addr=0x40)
 //   - Limit switch on pin 32
 //   - For stall test: motor shaft should be BLOCKED or motor disconnected
 // ============================================================================
@@ -22,13 +20,11 @@
 #include "core/system_types.h"
 #include "core/shared_state.h"
 #include "motion/motion_controller.h"
-#include "safety/current_sensor.h"
 #include "safety/fault_manager.h"
 
 static SharedState      sharedState;
 static MotionController motionCtrl;
-static CurrentSensor    currentSensor;
-static FaultManager     faultMgr(sharedState, motionCtrl, currentSensor);
+static FaultManager     faultMgr(sharedState, motionCtrl);
 
 static uint8_t testNumber = 0;
 static uint8_t passCount  = 0;
@@ -46,44 +42,7 @@ static void check(const char* name, bool passed, const char* detail = nullptr) {
 }
 
 // ============================================================================
-// Test 1: INA226 communication and current reading
-// ============================================================================
-static void testCurrentSensor() {
-    Serial.println("\n--- Test: INA226 Current Sensor ---");
-
-    bool initOk = currentSensor.begin();
-    check("INA226 initializes successfully", initOk);
-
-    if (!initOk) {
-        check("INA226 returns valid reading", false, "Skipped — init failed");
-        check("Current readings stable", false, "Skipped — init failed");
-        return;
-    }
-
-    vTaskDelay(pdMS_TO_TICKS(100));
-
-    float current = currentSensor.readCurrentMa();
-    bool readable = (current >= 0.0f && current < 50000.0f); // mA sanity range
-
-    char detail[64];
-    snprintf(detail, sizeof(detail), "Read %.1f mA", current);
-    check("INA226 returns valid reading", readable, detail);
-
-    // Take 10 readings, check stability
-    float minC = 999999.0f, maxC = -999999.0f;
-    for (int i = 0; i < 10; i++) {
-        float c = currentSensor.readCurrentMa();
-        if (c < minC) minC = c;
-        if (c > maxC) maxC = c;
-        vTaskDelay(pdMS_TO_TICKS(20));
-    }
-    float spread = maxC - minC;
-    snprintf(detail, sizeof(detail), "Spread=%.1f mA (min=%.1f max=%.1f)", spread, minC, maxC);
-    check("Current readings stable (spread < 500 mA)", spread < 500.0f, detail);
-}
-
-// ============================================================================
-// Test 2: Limit switch reading
+// Test 1: Limit switch reading
 // ============================================================================
 static void testLimitSwitch() {
     Serial.println("\n--- Test: Limit Switch ---");
@@ -111,7 +70,7 @@ static void testLimitSwitch() {
 }
 
 // ============================================================================
-// Test 3: Fault latching and reset
+// Test 2: Fault latching and reset
 // ============================================================================
 static void testFaultLatching() {
     Serial.println("\n--- Test: Fault Latching ---");
@@ -121,15 +80,15 @@ static void testFaultLatching() {
     FaultCode faults = sharedState.getFaults();
     check("No faults initially", faults == FaultCode::NONE);
 
-    // Trigger an overcurrent fault
-    faultMgr.triggerFault(FaultCode::OVERCURRENT);
+    // Trigger a stall fault
+    faultMgr.triggerFault(FaultCode::STALL_DETECTED);
 
     bool faultLatched = faultMgr.isFaultLatched();
     check("Fault active after trigger", faultLatched);
 
     faults = sharedState.getFaults();
-    bool correctCode = hasFault(faults, FaultCode::OVERCURRENT);
-    check("OVERCURRENT fault code latched", correctCode);
+    bool correctCode = hasFault(faults, FaultCode::STALL_DETECTED);
+    check("STALL_DETECTED fault code latched", correctCode);
 
     // Verify system state changed to FAULT
     SystemState state = sharedState.getState();
@@ -140,14 +99,14 @@ static void testFaultLatching() {
     check("Motor mode STOPPED after fault", motionCtrl.mode() == MotionController::Mode::STOPPED);
 
     // Trigger a second fault — both should be latched
-    faultMgr.triggerFault(FaultCode::STALL_DETECTED);
+    faultMgr.triggerFault(FaultCode::MOTION_TIMEOUT);
     faults = sharedState.getFaults();
-    bool hasOC = hasFault(faults, FaultCode::OVERCURRENT);
     bool hasStall = hasFault(faults, FaultCode::STALL_DETECTED);
-    check("Multiple faults: OC + STALL both latched", hasOC && hasStall);
+    bool hasTimeout = hasFault(faults, FaultCode::MOTION_TIMEOUT);
+    check("Multiple faults: STALL + TIMEOUT both latched", hasStall && hasTimeout);
 
     // Reset fault — should succeed since no actual current flowing
-    // Re-enable motor first so sensor reads low
+    // Re-enable motor first
     motionCtrl.begin(); // re-init
     vTaskDelay(pdMS_TO_TICKS(100));
 
@@ -165,7 +124,7 @@ static void testFaultLatching() {
 }
 
 // ============================================================================
-// Test 4: Stall detection — drive motor while blocked
+// Test 3: Stall detection — drive motor while blocked
 // ============================================================================
 static void testStallDetection() {
     Serial.println("\n--- Test: Stall Detection ---");
@@ -229,7 +188,7 @@ static void testStallDetection() {
 }
 
 // ============================================================================
-// Test 5: Motion timeout — verify timeout fires (takes ~15 sec)
+// Test 4: Motion timeout — verify timeout fires (takes ~15 sec)
 // ============================================================================
 static void testMotionTimeout() {
     Serial.println("\n--- Test: Motion Timeout ---");
@@ -307,7 +266,6 @@ void setup() {
     motionCtrl.begin();
     faultMgr.begin();
 
-    testCurrentSensor();
     testLimitSwitch();
     testFaultLatching();
     testStallDetection();

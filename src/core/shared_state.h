@@ -11,12 +11,12 @@
 #include "system_types.h"
 
 // Event group bits
-#define EVT_COMMAND_READY   (1 << 0)
-#define EVT_FAULT_OCCURRED  (1 << 1)
-#define EVT_MOTION_COMPLETE (1 << 2)
-#define EVT_HOMING_DONE     (1 << 3)
-#define EVT_WAKE_REQUEST    (1 << 4)
-#define EVT_WIFI_CONNECTED  (1 << 5)
+constexpr EventBits_t EVT_COMMAND_READY   = (1 << 0);
+constexpr EventBits_t EVT_FAULT_OCCURRED  = (1 << 1);
+constexpr EventBits_t EVT_MOTION_COMPLETE = (1 << 2);
+constexpr EventBits_t EVT_HOMING_DONE     = (1 << 3);
+constexpr EventBits_t EVT_WAKE_REQUEST    = (1 << 4);
+constexpr EventBits_t EVT_WIFI_CONNECTED  = (1 << 5);
 
 class SharedState {
 public:
@@ -72,10 +72,6 @@ public:
         lock([&]() { _status.velocity = vel; });
     }
 
-    void setCurrentMa(float ma) {
-        lock([&]() { _status.currentMa = ma; });
-    }
-
     void setState(SystemState st) {
         lock([&]() { _status.state = st; });
     }
@@ -109,30 +105,15 @@ public:
     }
 
     SystemState getState() const {
-        SystemState st = SystemState::BOOT;
-        if (xSemaphoreTake(_mutex, pdMS_TO_TICKS(10)) == pdTRUE) {
-            st = _status.state;
-            xSemaphoreGive(_mutex);
-        }
-        return st;
+        return lockRead([&]() { return _status.state; });
     }
 
     FaultCode getFaults() const {
-        FaultCode f = FaultCode::NONE;
-        if (xSemaphoreTake(_mutex, pdMS_TO_TICKS(10)) == pdTRUE) {
-            f = _status.faults;
-            xSemaphoreGive(_mutex);
-        }
-        return f;
+        return lockRead([&]() { return _status.faults; });
     }
 
     bool isHomed() const {
-        bool h = false;
-        if (xSemaphoreTake(_mutex, pdMS_TO_TICKS(10)) == pdTRUE) {
-            h = _status.homed;
-            xSemaphoreGive(_mutex);
-        }
-        return h;
+        return lockRead([&]() { return _status.homed; });
     }
 
     // --- Command Queue ------------------------------------------------------
@@ -178,5 +159,15 @@ private:
             fn();
             xSemaphoreGive(_mutex);
         }
+    }
+
+    template<typename Fn>
+    auto lockRead(Fn fn) const -> decltype(fn()) {
+        decltype(fn()) result{};
+        if (xSemaphoreTake(_mutex, pdMS_TO_TICKS(10)) == pdTRUE) {
+            result = fn();
+            xSemaphoreGive(_mutex);
+        }
+        return result;
     }
 };

@@ -21,16 +21,6 @@ namespace pin {
 
     // Limit Switch (normally closed, pulled high — LOW = pressed)
     constexpr uint8_t LIMIT_SWITCH     = 32;
-
-    // INA226 I2C
-    constexpr uint8_t I2C_SDA          = 21;
-    constexpr uint8_t I2C_SCL          = 22;
-}
-
-// --- I2C Configuration ------------------------------------------------------
-namespace i2c {
-    constexpr uint8_t  INA226_ADDR     = 0x40;
-    constexpr uint32_t CLOCK_HZ        = 400000;
 }
 
 // --- Motor / PWM Configuration ----------------------------------------------
@@ -86,18 +76,14 @@ namespace homing {
 
 // --- Safety Thresholds ------------------------------------------------------
 namespace safety {
-    constexpr float    OVERCURRENT_MA  = 5000.0f;     // Motor stall / jam threshold
-    constexpr float    WARNING_CURRENT_MA = 3500.0f;   // Pre-fault warning
+    constexpr float    MIN_PID_OUTPUT   = 0.15f;       // PID effort threshold for stall detection
     constexpr uint32_t STALL_TIME_MS   = 500;          // Duration before stall fault
-    constexpr uint32_t CURRENT_SAMPLE_MS = 50;         // INA226 poll interval
-    constexpr uint32_t MOTION_TIMEOUT_MS = 15000;      // Matches motion timeout
-    constexpr uint8_t  OVERCURRENT_FILTER_COUNT = 3;   // Consecutive samples to confirm
 }
 
 // --- Network ----------------------------------------------------------------
 namespace network {
-    constexpr const char* WIFI_SSID    = "sharonmakover";
-    constexpr const char* WIFI_PASS    = "0503527142";
+    constexpr const char* AP_NAME      = "ProjectorScreen-Setup"; // Captive portal AP name
+    constexpr uint16_t PORTAL_TIMEOUT_SEC = 180;                  // Portal auto-close (seconds)
     constexpr const char* HOSTNAME     = "projector-screen";
     constexpr uint16_t HTTP_PORT       = 80;
     constexpr uint32_t RECONNECT_INTERVAL_MS = 10000;

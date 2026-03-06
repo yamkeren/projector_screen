@@ -26,7 +26,6 @@
 #include "core/shared_state.h"
 #include "motion/motion_controller.h"
 #include "motion/pid.h"
-#include "safety/current_sensor.h"
 #include "safety/fault_manager.h"
 #include "storage/persistent_storage.h"
 #include "app/homing_machine.h"
@@ -34,8 +33,7 @@
 
 static SharedState        sharedState;
 static MotionController   motionCtrl;
-static CurrentSensor      currentSensor;
-static FaultManager       faultMgr(sharedState, motionCtrl, currentSensor);
+static FaultManager       faultMgr(sharedState, motionCtrl);
 static PersistentStorage  storage;
 static HomingMachine      homing(sharedState, motionCtrl);
 static AppController      appCtrl(sharedState, motionCtrl, faultMgr, storage, homing);
@@ -60,14 +58,6 @@ static void testInit() {
 
     motionCtrl.begin();
     check("MotionController.begin() completes", true);
-
-    bool sensorOk = currentSensor.begin();
-    if (sensorOk) {
-        float c = currentSensor.readCurrentMa();
-        check("CurrentSensor returns valid reading", c >= 0.0f && c < 100000.0f);
-    } else {
-        check("CurrentSensor returns valid reading", false, "INA226 init failed");
-    }
 
     bool storageOk = storage.begin();
     check("PersistentStorage.begin() completes", storageOk);
@@ -218,25 +208,25 @@ static void testFaultCycle() {
     FaultCode faults = sharedState.getFaults();
     check("Start with no faults", faults == FaultCode::NONE);
 
-    // Trigger overcurrent
-    faultMgr.triggerFault(FaultCode::OVERCURRENT);
-    check("Overcurrent fault latches", faultMgr.isFaultLatched());
+    // Trigger stall fault
+    faultMgr.triggerFault(FaultCode::STALL_DETECTED);
+    check("Stall fault latches", faultMgr.isFaultLatched());
 
     faults = sharedState.getFaults();
-    check("OC code in shared state", hasFault(faults, FaultCode::OVERCURRENT));
+    check("STALL code in shared state", hasFault(faults, FaultCode::STALL_DETECTED));
 
     // SystemState should be FAULT
     check("State moved to FAULT", sharedState.getState() == SystemState::FAULT);
 
     // Add second fault
-    faultMgr.triggerFault(FaultCode::STALL_DETECTED);
+    faultMgr.triggerFault(FaultCode::MOTION_TIMEOUT);
     faults = sharedState.getFaults();
-    check("STALL also latched", hasFault(faults, FaultCode::STALL_DETECTED));
+    check("TIMEOUT also latched", hasFault(faults, FaultCode::MOTION_TIMEOUT));
     check("Multiple faults active simultaneously",
-          hasFault(faults, FaultCode::OVERCURRENT) && hasFault(faults, FaultCode::STALL_DETECTED));
+          hasFault(faults, FaultCode::STALL_DETECTED) && hasFault(faults, FaultCode::MOTION_TIMEOUT));
 
     // Reset
-    motionCtrl.begin(); // re-enable motor, sensor reads low current
+    motionCtrl.begin(); // re-enable motor
     vTaskDelay(pdMS_TO_TICKS(100));
 
     bool resetOk = faultMgr.resetFault();

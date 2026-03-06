@@ -10,12 +10,12 @@
 #include <Arduino.h>
 #include <esp_task_wdt.h>
 #include <soc/rtc_cntl_reg.h>
+#include <ESPmDNS.h>
 
 #include "config.h"
 #include "core/system_types.h"
 #include "core/shared_state.h"
 #include "motion/motion_controller.h"
-#include "safety/current_sensor.h"
 #include "safety/fault_manager.h"
 #include "network/wifi_manager.h"
 #include "network/rest_api.h"
@@ -30,8 +30,7 @@
 // ============================================================================
 static SharedState       sharedState;
 static MotionController  motionCtrl;
-static CurrentSensor     currentSensor;
-static FaultManager      faultMgr(sharedState, motionCtrl, currentSensor);
+static FaultManager      faultMgr(sharedState, motionCtrl);
 static WifiManager       wifiMgr(sharedState);
 static RestApi           restApi(sharedState);
 static PersistentStorage storage;
@@ -118,26 +117,9 @@ static void networkTask(void* param) {
     auto* ctx = static_cast<NetworkTaskCtx*>(param);
     TickType_t wake = xTaskGetTickCount();
 
-    bool apiStarted = false;
-
     for (;;) {
         ctx->wifi.update();
-
-        if (ctx->wifi.isConnected()) {
-            if (!apiStarted) {
-                ctx->api.begin();
-                apiStarted = true;
-                log_i("REST API started on %s:%d",
-                      ctx->wifi.localIP().toString().c_str(),
-                      cfg::network::HTTP_PORT);
-            }
-            ctx->api.handleClient();
-        } else {
-            if (apiStarted) {
-                ctx->api.stop();
-                apiStarted = false;
-            }
-        }
+        ctx->api.loop();   // ElegantOTA progress tick
 
         vTaskDelayUntil(&wake, pdMS_TO_TICKS(cfg::task::NETWORK_PERIOD_MS));
     }
@@ -153,12 +135,6 @@ static void appStateTask(void* param) {
     for (;;) {
         ctx->app.update();
         ctx->buzzer.update();   // Tick buzzer playback FSM
-
-        // Notify power manager of activity when moving
-        if (ctx->shared.getState() == SystemState::MOVING ||
-            ctx->shared.getState() == SystemState::HOMING) {
-            // Activity is tracked by PowerManager::update() checking state
-        }
 
         vTaskDelayUntil(&wake, pdMS_TO_TICKS(cfg::task::APP_PERIOD_MS));
     }
@@ -220,20 +196,29 @@ void setup() {
     log_i("Initializing motion controller...");
     motionCtrl.begin();
 
-    log_i("Initializing current sensor...");
-    if (!currentSensor.begin()) {
-        log_w("INA226 init failed — current monitoring disabled");
-    }
-
     log_i("Initializing fault manager...");
     faultMgr.begin();
 
     log_i("Initializing buzzer...");
     buzzer.begin();
 
-    log_i("Initializing WiFi...");
-    wifiMgr.begin();
+    log_i("Initializing WiFi (captive portal if unconfigured)...");
     wifiMgr.setBuzzer(&buzzer);
+    if (wifiMgr.begin()) {
+        log_i("WiFi connected: %s", WiFi.localIP().toString().c_str());
+
+        // Start mDNS so device is reachable at projector-screen.local
+        if (MDNS.begin(cfg::network::HOSTNAME)) {
+            MDNS.addService("http", "tcp", cfg::network::HTTP_PORT);
+            log_i("mDNS started: %s.local", cfg::network::HOSTNAME);
+        }
+
+        // Start async REST API + OTA server
+        restApi.begin();
+        log_i("REST API + OTA started on port %d", cfg::network::HTTP_PORT);
+    } else {
+        log_w("WiFi not configured — running offline");
+    }
 
     log_i("Initializing power manager...");
     powerMgr.begin();

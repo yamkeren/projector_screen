@@ -18,12 +18,10 @@ enum class SystemState : uint8_t {
 // --- Fault Codes (bit flags for compound faults) ----------------------------
 enum class FaultCode : uint16_t {
     NONE              = 0x0000,
-    OVERCURRENT       = 0x0001,
     STALL_DETECTED    = 0x0002,
     MOTION_TIMEOUT    = 0x0004,
     LIMIT_SWITCH_FAIL = 0x0008,
     HOMING_FAILED     = 0x0010,
-    SENSOR_FAULT      = 0x0020,
     BROWNOUT          = 0x0040,
     WATCHDOG_RESET    = 0x0080,
     CONFIG_CORRUPT    = 0x0100
@@ -75,6 +73,34 @@ enum class HomingState : uint8_t {
     FAILED
 };
 
+// --- Enum-to-string converters (shared by REST API, MQTT, etc.) -------------
+
+inline const char* systemStateToStr(SystemState s) {
+    switch (s) {
+        case SystemState::BOOT:     return "boot";
+        case SystemState::HOMING:   return "homing";
+        case SystemState::IDLE:     return "idle";
+        case SystemState::MOVING:   return "moving";
+        case SystemState::FAULT:    return "fault";
+        case SystemState::SLEEPING: return "sleeping";
+        default:                    return "unknown";
+    }
+}
+
+inline const char* homingStateToStr(HomingState s) {
+    switch (s) {
+        case HomingState::UNINITIALIZED:  return "uninitialized";
+        case HomingState::SEEK_SWITCH:    return "seek_switch";
+        case HomingState::VERIFY_CONTACT: return "verify_contact";
+        case HomingState::BACK_OFF:       return "back_off";
+        case HomingState::APPROACH_SLOW:  return "approach_slow";
+        case HomingState::SET_ZERO:       return "set_zero";
+        case HomingState::COMPLETE:       return "complete";
+        case HomingState::FAILED:         return "failed";
+        default:                          return "unknown";
+    }
+}
+
 // --- Shared system snapshot, protected by mutex -----------------------------
 struct SystemStatus {
     SystemState state        = SystemState::BOOT;
@@ -83,7 +109,6 @@ struct SystemStatus {
     int32_t     position     = 0;
     int32_t     targetPos    = 0;
     float       velocity     = 0.0f;       // Counts/sec
-    float       currentMa    = 0.0f;       // Motor current in mA
     bool        homed        = false;
     bool        limitSwitch  = false;      // true = switch activated
     bool        wifiConnected = false;

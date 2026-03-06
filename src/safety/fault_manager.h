@@ -7,13 +7,12 @@
 #include "config.h"
 #include "core/system_types.h"
 #include "core/shared_state.h"
-#include "safety/current_sensor.h"
 #include "motion/motion_controller.h"
 
 class FaultManager {
 public:
-    FaultManager(SharedState& shared, MotionController& motion, CurrentSensor& sensor)
-        : _shared(shared), _motion(motion), _sensor(sensor) {}
+    FaultManager(SharedState& shared, MotionController& motion)
+        : _shared(shared), _motion(motion) {}
 
     void begin() {
         pinMode(cfg::pin::LIMIT_SWITCH, INPUT_PULLUP);
@@ -22,19 +21,6 @@ public:
     // Called periodically from SafetyTask
     void evaluate() {
         FaultCode newFaults = FaultCode::NONE;
-
-        // --- Overcurrent detection with filter counter ----------------------
-        float currentMa = _sensor.readCurrentMa();
-        _shared.setCurrentMa(currentMa);
-
-        if (currentMa > cfg::safety::OVERCURRENT_MA) {
-            _overcurrentCount++;
-            if (_overcurrentCount >= cfg::safety::OVERCURRENT_FILTER_COUNT) {
-                newFaults |= FaultCode::OVERCURRENT;
-            }
-        } else {
-            _overcurrentCount = 0;
-        }
 
         // --- Stall detection ------------------------------------------------
         // If motor is driving but encoder velocity is near zero
@@ -45,7 +31,7 @@ public:
         if (state == SystemState::MOVING || state == SystemState::HOMING) {
             if (_motion.mode() != MotionController::Mode::STOPPED) {
                 if (fabsf(velocity) < cfg::motion::VELOCITY_THRESHOLD &&
-                    fabsf(_motion.pidOutput()) > 0.15f) {
+                    fabsf(_motion.pidOutput()) > cfg::safety::MIN_PID_OUTPUT) {
                     if (_stallStartMs == 0) {
                         _stallStartMs = millis();
                     } else if ((millis() - _stallStartMs) > cfg::safety::STALL_TIME_MS) {
@@ -66,11 +52,6 @@ public:
         // --- Motion timeout -------------------------------------------------
         if (_motion.timedOut()) {
             newFaults |= FaultCode::MOTION_TIMEOUT;
-        }
-
-        // --- Sensor fault ---------------------------------------------------
-        if (_sensor.hasFault()) {
-            newFaults |= FaultCode::SENSOR_FAULT;
         }
 
         // --- Latch any new faults -------------------------------------------
@@ -95,14 +76,7 @@ public:
 
     // Explicit reset required — returns true if reset was successful
     bool resetFault() {
-        // Only reset if underlying condition is cleared
-        float currentMa = _sensor.lastFilteredMa();
-        if (currentMa > cfg::safety::WARNING_CURRENT_MA) {
-            return false; // Still overcurrent, refuse reset
-        }
-
         _shared.setFaults(FaultCode::NONE);
-        _overcurrentCount = 0;
         _stallStartMs = 0;
         _faultLatched = false;
         _shared.clearEvent(EVT_FAULT_OCCURRED);
@@ -121,9 +95,7 @@ public:
 private:
     SharedState&     _shared;
     MotionController& _motion;
-    CurrentSensor&   _sensor;
 
-    uint8_t  _overcurrentCount = 0;
     uint32_t _stallStartMs     = 0;
     bool     _faultLatched     = false;
 };

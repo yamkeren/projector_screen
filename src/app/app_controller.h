@@ -81,32 +81,28 @@ private:
     HomingMachine&    _homing;
     Buzzer*           _buzzer = nullptr;
 
+    void startMove(int32_t target, void (Buzzer::*sound)()) {
+        if (_shared.getState() == SystemState::FAULT) return;
+        if (!_shared.isHomed()) {
+            log_w("Cannot move — not homed");
+            return;
+        }
+        _motion.setTarget(target);
+        _shared.setTargetPosition(target);
+        _shared.setState(SystemState::MOVING);
+        if (_buzzer) (_buzzer->*sound)();
+    }
+
     void processCommand(const Command& cmd) {
         SystemState state = _shared.getState();
 
         switch (cmd.type) {
             case CommandType::CLOSE:
-                if (state == SystemState::FAULT) break;
-                if (!_shared.isHomed()) {
-                    log_w("Cannot move — not homed");
-                    break;
-                }
-                _motion.setTarget(cfg::motion::SCREEN_CLOSE_POS);
-                _shared.setTargetPosition(cfg::motion::SCREEN_CLOSE_POS);
-                _shared.setState(SystemState::MOVING);
-                if (_buzzer) _buzzer->playScreenClosing();
+                startMove(cfg::motion::SCREEN_CLOSE_POS, &Buzzer::playScreenClosing);
                 break;
 
             case CommandType::OPEN:
-                if (state == SystemState::FAULT) break;
-                if (!_shared.isHomed()) {
-                    log_w("Cannot move — not homed");
-                    break;
-                }
-                _motion.setTarget(cfg::motion::SCREEN_OPEN_POS);
-                _shared.setTargetPosition(cfg::motion::SCREEN_OPEN_POS);
-                _shared.setState(SystemState::MOVING);
-                if (_buzzer) _buzzer->playScreenDown();
+                startMove(cfg::motion::SCREEN_OPEN_POS, &Buzzer::playScreenDown);
                 break;
 
             case CommandType::STOP:

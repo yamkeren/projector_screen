@@ -5,6 +5,7 @@
 
 #include <Arduino.h>
 #include <Preferences.h>
+#include <esp_crc.h>
 #include "config.h"
 
 class PersistentStorage {
@@ -93,21 +94,7 @@ private:
     bool        _initialized = false;
     uint32_t    _lastSaveMs  = 0;
 
-    // Simple CRC32 over StoredConfig bytes
     static uint32_t computeCrc(const StoredConfig& sc) {
-        const uint8_t* data = reinterpret_cast<const uint8_t*>(&sc);
-        size_t len = sizeof(StoredConfig);
-        uint32_t crc = 0xFFFFFFFF;
-        for (size_t i = 0; i < len; i++) {
-            crc ^= data[i];
-            for (int j = 0; j < 8; j++) {
-                if (crc & 1) {
-                    crc = (crc >> 1) ^ 0xEDB88320;
-                } else {
-                    crc >>= 1;
-                }
-            }
-        }
-        return crc ^ 0xFFFFFFFF;
+        return esp_crc32_le(0, reinterpret_cast<const uint8_t*>(&sc), sizeof(StoredConfig));
     }
 };
